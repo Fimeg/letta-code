@@ -348,7 +348,7 @@ export async function applyMemfsFlags(
       agentId,
       options?.agentTags ? { tags: options.agentTags } : undefined,
     );
-    if (!isGitRepo(agentId)) {
+    if (!isGitRepo(agentId) && (await isLettaCloud())) {
       await cloneMemoryRepo(agentId);
     } else if (options?.pullOnExistingRepo) {
       const result = await pullMemory(agentId);
