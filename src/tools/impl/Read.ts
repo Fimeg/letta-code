@@ -18,12 +18,10 @@ import { validateRequiredParams } from "./validation.js";
  * Currently only api.letta.com supports this feature.
  */
 function serverSupportsImageToolReturns(): boolean {
-  const settings = settingsManager.getSettings();
-  const baseURL =
-    process.env.LETTA_BASE_URL ||
-    settings.env?.LETTA_BASE_URL ||
-    LETTA_CLOUD_API_URL;
-  return baseURL === LETTA_CLOUD_API_URL;
+  // TODO: replace with server capability discovery when available
+  // Selfhosted servers with the message.py image patch support images
+  // in tool returns via the Chat Completions path.
+  return true;
 }
 
 interface ReadArgs {
