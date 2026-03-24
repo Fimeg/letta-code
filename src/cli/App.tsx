@@ -51,7 +51,6 @@ import { ISOLATED_BLOCK_LABELS } from "../agent/memory";
 import {
   ensureMemoryFilesystemDirs,
   getMemoryFilesystemRoot,
-  isLettaCloud,
 } from "../agent/memoryFilesystem";
 import {
   getStreamToolContextId,
@@ -3644,9 +3643,9 @@ export default function App({
         const { isGitRepo, cloneMemoryRepo, pullMemory } = await import(
           "../agent/memoryGit"
         );
-        if (!isGitRepo(agentId) && (await isLettaCloud())) {
+        if (!isGitRepo(agentId)) {
           await cloneMemoryRepo(agentId);
-        } else if (isGitRepo(agentId)) {
+        } else {
           await pullMemory(agentId);
         }
       } catch (err) {
