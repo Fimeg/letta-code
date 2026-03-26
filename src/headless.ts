@@ -990,7 +990,7 @@ export async function handleHeadlessCommand(
     // so their prompts are left untouched by auto-heal.
     if (
       !storedPreset &&
-      agent.tags?.includes("origin:letta-code") &&
+      (agent.tags?.includes("origin:letta-code") || agent.tags?.includes("origin:lettabot")) &&
       !agent.tags?.includes("role:subagent")
     ) {
       storedPreset = "custom";
@@ -2350,6 +2350,31 @@ ${SYSTEM_REMINDER_CLOSE}
 }
 
 /**
+ * Extract plain text from a MessageCreate content value (string or parts array).
+ * Used to build a synthetic user Line for the reflection transcript.
+ */
+function extractUserTextFromContent(
+  content: MessageCreate["content"],
+): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(
+        (p): p is { type: "text"; text: string } =>
+          typeof p === "object" &&
+          p !== null &&
+          "type" in p &&
+          (p as { type: unknown }).type === "text" &&
+          "text" in p &&
+          typeof (p as { text: unknown }).text === "string",
+      )
+      .map((p) => p.text)
+      .join("\n");
+  }
+  return "";
+}
+
+/**
  * Bidirectional mode for SDK communication.
  * Reads JSON messages from stdin, processes them, and outputs responses.
  * Stays alive until stdin closes.
@@ -2392,6 +2417,130 @@ async function runBidirectionalMode(
   const reminderContextTracker = createContextTracker();
   const sharedReminderState = createSharedReminderState();
   const isSubagent = process.env.LETTA_CODE_AGENT_ROLE === "subagent";
+
+  // Session-level reflection state — mirrors the React refs used in App.tsx
+  const recompileByConversation = new Map<string, Promise<void>>();
+  const recompileQueuedByConversation = new Set<string>();
+
+  /**
+   * Launch a reflection subagent in the background, mirroring App.tsx's
+   * maybeLaunchReflectionSubagent. Defined once per session since agentId
+   * and conversationId are stable in bidirectional mode.
+   */
+  const maybeLaunchReflectionSubagent = async (
+    _triggerSource: "step-count" | "compaction-event",
+  ): Promise<boolean> => {
+    if (!settingsManager.isMemfsEnabled(agent.id)) return false;
+
+    const { getSnapshot } = await import("./cli/helpers/subagentState");
+    const snapshot = getSnapshot();
+    const hasActive = snapshot.agents.some(
+      (a) =>
+        a.type.toLowerCase() === "reflection" &&
+        (a.status === "pending" || a.status === "running"),
+    );
+    if (hasActive) {
+      debugLog(
+        "memory",
+        `Skipping auto reflection launch (${_triggerSource}) because one is already active`,
+      );
+      return false;
+    }
+
+    try {
+      const {
+        buildAutoReflectionPayload,
+        finalizeAutoReflectionPayload,
+        buildParentMemorySnapshot,
+        buildReflectionSubagentPrompt,
+      } = await import("./cli/helpers/reflectionTranscript");
+      const { getMemoryFilesystemRoot } = await import(
+        "./agent/memoryFilesystem"
+      );
+
+      const autoPayload = await buildAutoReflectionPayload(
+        agent.id,
+        conversationId,
+      );
+      if (!autoPayload) {
+        debugLog(
+          "memory",
+          `Skipping auto reflection launch (${_triggerSource}) because transcript has no new content`,
+        );
+        return false;
+      }
+
+      const memoryDir = getMemoryFilesystemRoot(agent.id);
+      const parentMemory = await buildParentMemorySnapshot(memoryDir);
+      const reflectionPrompt = buildReflectionSubagentPrompt({
+        transcriptPath: autoPayload.payloadPath,
+        memoryDir,
+        cwd: process.cwd(),
+        parentMemory,
+      });
+
+      const { spawnBackgroundSubagentTask } = await import("./tools/impl/Task");
+      spawnBackgroundSubagentTask({
+        subagentType: "reflection",
+        prompt: reflectionPrompt,
+        description: "Reflect on recent conversations",
+        silentCompletion: true,
+        onComplete: async ({ success, error }) => {
+          await finalizeAutoReflectionPayload(
+            agent.id,
+            conversationId,
+            autoPayload.payloadPath,
+            autoPayload.endSnapshotLine,
+            success,
+          );
+
+          const { handleMemorySubagentCompletion } = await import(
+            "./cli/helpers/memorySubagentCompletion"
+          );
+          const msg = await handleMemorySubagentCompletion(
+            {
+              agentId: agent.id,
+              conversationId,
+              subagentType: "reflection",
+              success,
+              error,
+            },
+            {
+              recompileByConversation,
+              recompileQueuedByConversation,
+              logRecompileFailure: (m) => debugWarn("memory", m),
+            },
+          );
+
+          // Emit notification to stdout for SDK consumers to optionally handle
+          console.log(
+            JSON.stringify({
+              type: "system",
+              subtype: "task_notification",
+              session_id: sessionId,
+              text: msg,
+            }),
+          );
+        },
+      });
+
+      debugLog(
+        "memory",
+        `Auto-launched reflection subagent (${_triggerSource})`,
+      );
+      return true;
+    } catch (launchError) {
+      debugWarn(
+        "memory",
+        `Failed to auto-launch reflection subagent (${_triggerSource}): ${
+          launchError instanceof Error
+            ? launchError.message
+            : String(launchError)
+        }`,
+      );
+      return false;
+    }
+  };
 
   // Resolve pending approvals for this conversation before retrying user input.
   const resolveAllPendingApprovals = async () => {
@@ -3290,6 +3439,7 @@ async function runBidirectionalMode(
             const { PLAN_MODE_REMINDER } = await import("./agent/promptAssets");
             return PLAN_MODE_REMINDER;
           },
+          maybeLaunchReflectionSubagent,
         });
         const enrichedContent = prependReminderPartsToContent(
           userContent,
@@ -3646,6 +3796,36 @@ async function runBidirectionalMode(
         // Emit result
         const durationMs = performance.now() - startTime;
         const lines = toLines(buffers);
+
+        // Append transcript delta for reflection — always write, even on
+        // interrupted/error turns, so short user exchanges are captured.
+        if (settingsManager.isMemfsEnabled(agent.id)) {
+          try {
+            const { appendTranscriptDeltaJsonl } = await import(
+              "./cli/helpers/reflectionTranscript"
+            );
+            const userText = extractUserTextFromContent(userContent);
+            const userLine: Line = {
+              kind: "user",
+              id: randomUUID(),
+              text: userText,
+            };
+            await appendTranscriptDeltaJsonl(agent.id, conversationId, [
+              userLine,
+              ...lines,
+            ]);
+          } catch (transcriptErr) {
+            debugWarn(
+              "memory",
+              `Failed to append transcript delta: ${
+                transcriptErr instanceof Error
+                  ? transcriptErr.message
+                  : String(transcriptErr)
+              }`,
+            );
+          }
+        }
+
         const reversed = [...lines].reverse();
         const lastAssistant = reversed.find(
           (line) =>
