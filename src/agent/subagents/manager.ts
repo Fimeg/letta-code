@@ -70,8 +70,10 @@ interface ExecutionState {
  * Fetches from API and resolves to a known model ID
  */
 function getModelHandleFromAgent(agent: {
-  llm_config?: { model_endpoint_type?: string | null; model?: string | null };
+  llm_config?: { handle?: string | null; model_endpoint_type?: string | null; model?: string | null };
 }): string | null {
+  const handle = agent.llm_config?.handle;
+  if (handle) return handle;
   const endpoint = agent.llm_config?.model_endpoint_type;
   const model = agent.llm_config?.model;
   if (endpoint && model) {

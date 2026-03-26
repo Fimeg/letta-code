@@ -226,7 +226,7 @@ export function shouldClearPersistedToolRules(
   agent: AgentWithToolsAndRules,
 ): boolean {
   return (
-    agent.tags?.includes("origin:letta-code") === true &&
+    (agent.tags?.includes("origin:letta-code") || agent.tags?.includes("origin:lettabot")) === true &&
     (agent.tool_rules?.length ?? 0) > 0
   );
 }

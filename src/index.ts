@@ -1875,7 +1875,7 @@ async function main(): Promise<void> {
           // so their prompts are left untouched by auto-heal.
           if (
             !storedPreset &&
-            agent.tags?.includes("origin:letta-code") &&
+            (agent.tags?.includes("origin:letta-code") || agent.tags?.includes("origin:lettabot")) &&
             !agent.tags?.includes("role:subagent")
           ) {
             storedPreset = "custom";

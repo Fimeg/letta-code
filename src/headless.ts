@@ -2466,12 +2466,12 @@ async function runBidirectionalMode(
       const {
         buildAutoReflectionPayload,
         finalizeAutoReflectionPayload,
-        buildParentMemorySnapshot,
         buildReflectionSubagentPrompt,
       } = await import("./cli/helpers/reflectionTranscript");
       const { getMemoryFilesystemRoot } = await import(
         "./agent/memoryFilesystem"
       );
+      const { recompileAgentSystemPrompt } = await import("./agent/modify");
 
       const autoPayload = await buildAutoReflectionPayload(
         agent.id,
@@ -2486,7 +2486,16 @@ async function runBidirectionalMode(
       }
 
       const memoryDir = getMemoryFilesystemRoot(agent.id);
-      const parentMemory = await buildParentMemorySnapshot(memoryDir);
+      let parentMemory: string | undefined;
+      try {
+        parentMemory = await recompileAgentSystemPrompt(
+          conversationId,
+          agent.id,
+          true,
+        );
+      } catch {
+        debugWarn("memory", "Failed to fetch parent system prompt for reflection; proceeding without it");
+      }
       const reflectionPrompt = buildReflectionSubagentPrompt({
         transcriptPath: autoPayload.payloadPath,
         memoryDir,
@@ -2495,11 +2504,20 @@ async function runBidirectionalMode(
       });
 
       const { spawnBackgroundSubagentTask } = await import("./tools/impl/Task");
+      // conscience: persistent supervisory agent (opt-in via env vars).
+      // Falls back to default ephemeral reflection if not configured.
+      const conscienceConversationId = process.env.CONSCIENCE_CONVERSATION_ID;
+      const conscienceAgentId = process.env.CONSCIENCE_AGENT_ID;
       spawnBackgroundSubagentTask({
         subagentType: "reflection",
         prompt: reflectionPrompt,
         description: "Reflect on recent conversations",
         silentCompletion: true,
+        ...(conscienceConversationId
+          ? { existingConversationId: conscienceConversationId }
+          : conscienceAgentId
+          ? { existingAgentId: conscienceAgentId }
+          : {}),
         onComplete: async ({ success, error }) => {
           await finalizeAutoReflectionPayload(
             agent.id,

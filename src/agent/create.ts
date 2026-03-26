@@ -335,12 +335,19 @@ export async function createAgent(
   // - memory_blocks: new blocks to create inline
   // - block_ids: references to existing blocks (for shared memory)
   const isSubagent = process.env.LETTA_CODE_AGENT_ROLE === "subagent";
-  const tags = ["origin:letta-code"];
-  if (isSubagent) {
-    tags.push("role:subagent");
-  }
+
+  // Start with empty array, add user's tags first
+  let tags: string[] = [];
   if (options.tags && Array.isArray(options.tags)) {
     tags.push(...options.tags);
+  }
+  // Only add origin:letta-code if the agent is NOT origin:lettabot
+  // This prevents the dual-identity problem where agents see both prompts
+  if (!tags.includes("origin:lettabot") && !tags.includes("origin:letta-code")) {
+    tags.push("origin:letta-code");
+  }
+  if (isSubagent) {
+    tags.push("role:subagent");
   }
 
   const agentDescription =
