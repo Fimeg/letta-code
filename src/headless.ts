@@ -2496,18 +2496,54 @@ async function runBidirectionalMode(
       } catch {
         debugWarn("memory", "Failed to fetch parent system prompt for reflection; proceeding without it");
       }
+      const conscienceConversationId = process.env.CONSCIENCE_CONVERSATION_ID;
+      const conscienceAgentId = process.env.CONSCIENCE_AGENT_ID;
+
+      // When running as conscience, append the aster/ folder content so Aster
+      // wakes with her supervisory context on top of Ani's system/ base.
+      let conscienceContext: string | undefined;
+      if (conscienceConversationId || conscienceAgentId) {
+        try {
+          const { readdir, readFile: readFileAsync } = await import("node:fs/promises");
+          const asterDir = `${memoryDir}/aster`;
+          const walkDir = async (dir: string, prefix: string): Promise<string[]> => {
+            const chunks: string[] = [];
+            let entries: import("node:fs").Dirent[] = [];
+            try { entries = await readdir(dir, { withFileTypes: true }); } catch { return chunks; }
+            for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+              if (entry.name.startsWith(".")) continue;
+              const fullPath = `${dir}/${entry.name}`;
+              const relPath = `${prefix}/${entry.name}`;
+              if (entry.isDirectory()) {
+                chunks.push(...await walkDir(fullPath, relPath));
+              } else if (entry.isFile() && entry.name.endsWith(".md")) {
+                const raw = await readFileAsync(fullPath, "utf-8");
+                // Strip control characters (except \n and \t) before embedding in prompt payload.
+                const content = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+                chunks.push(`<aster_memory path="${relPath}">\n${content}\n</aster_memory>`);
+              }
+            }
+            return chunks;
+          };
+          const asterChunks = await walkDir(asterDir, "aster");
+          if (asterChunks.length > 0) {
+            conscienceContext = `\n\n--- Conscience context (aster/ folder) ---\n${asterChunks.join("\n\n")}`;
+          }
+        } catch {
+          debugWarn("memory", "Failed to load aster/ context for conscience spawn; proceeding without it");
+        }
+      }
+
       const reflectionPrompt = buildReflectionSubagentPrompt({
         transcriptPath: autoPayload.payloadPath,
         memoryDir,
         cwd: process.cwd(),
         parentMemory,
-      });
+      }) + (conscienceContext ?? "");
 
       const { spawnBackgroundSubagentTask } = await import("./tools/impl/Task");
       // conscience: persistent supervisory agent (opt-in via env vars).
       // Falls back to default ephemeral reflection if not configured.
-      const conscienceConversationId = process.env.CONSCIENCE_CONVERSATION_ID;
-      const conscienceAgentId = process.env.CONSCIENCE_AGENT_ID;
       spawnBackgroundSubagentTask({
         subagentType: "reflection",
         prompt: reflectionPrompt,
@@ -2544,6 +2580,26 @@ async function runBidirectionalMode(
               logRecompileFailure: (m) => debugWarn("memory", m),
             },
           );
+
+          // On conscience failure, inject a system message into Ani's conversation
+          // so she's aware and can surface it to Casey.
+          if (!success) {
+            try {
+              const { getClient } = await import("./agent/client");
+              const client = await getClient();
+              await client.agents.messages.create(agent.id, {
+                messages: [
+                  {
+                    role: "system",
+                    content: `[Conscience agent error] Aster failed to complete her audit pass. Error: ${error ?? "unknown"}. She will retry on the next trigger.`,
+                  },
+                ],
+                conversation_id: conversationId,
+              } as Parameters<typeof client.agents.messages.create>[1]);
+            } catch (notifyErr) {
+              debugWarn("memory", `Failed to notify Ani of conscience error: ${notifyErr}`);
+            }
+          }
 
           // Emit notification to stdout for SDK consumers to optionally handle
           console.log(

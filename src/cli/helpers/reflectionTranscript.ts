@@ -129,7 +129,10 @@ async function collectParentMemoryFiles(
       }
 
       try {
-        const content = await readFile(entryPath, "utf-8");
+        const raw = await readFile(entryPath, "utf-8");
+        // Strip control characters (except \n and \t) to prevent INVALID_ARGUMENT
+        // errors when file content is embedded in JSON payloads sent to the API.
+        const content = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
         const { frontmatter } = parseFrontmatter(content);
         const description =
           typeof frontmatter.description === "string"
