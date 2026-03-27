@@ -2496,7 +2496,18 @@ async function runBidirectionalMode(
       } catch {
         debugWarn("memory", "Failed to fetch parent system prompt for reflection; proceeding without it");
       }
-      const conscienceConversationId = process.env.CONSCIENCE_CONVERSATION_ID;
+      // Read conscience conv ID from state file first (written by !reset aster / aster/reset API),
+      // falling back to env var frozen at spawn. This lets the conv ID update without a restart.
+      let conscienceConversationId = process.env.CONSCIENCE_CONVERSATION_ID;
+      const conscienceStateFile = `${process.env.WORKING_DIR || process.env.HOME || process.cwd()}/.conscience-state.json`;
+      try {
+        const { readFile: readStateFile } = await import("node:fs/promises");
+        const stateRaw = await readStateFile(conscienceStateFile, "utf-8");
+        const state = JSON.parse(stateRaw);
+        if (state?.conversationId) {
+          conscienceConversationId = state.conversationId;
+        }
+      } catch { /* no state file yet — use env var */ }
       const conscienceAgentId = process.env.CONSCIENCE_AGENT_ID;
 
       // When running as conscience, append the aster/ folder content so Aster
