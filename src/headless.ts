@@ -2488,11 +2488,13 @@ async function runBidirectionalMode(
       const memoryDir = getMemoryFilesystemRoot(agent.id);
       let parentMemory: string | undefined;
       try {
-        parentMemory = await recompileAgentSystemPrompt(
+        const raw = await recompileAgentSystemPrompt(
           conversationId,
           agent.id,
           true,
         );
+        // Strip control chars that would break JSON serialisation in the HTTP body
+        parentMemory = raw?.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
       } catch {
         debugWarn("memory", "Failed to fetch parent system prompt for reflection; proceeding without it");
       }

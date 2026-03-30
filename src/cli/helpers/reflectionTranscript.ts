@@ -418,6 +418,26 @@ function parseJsonLine<T>(line: string): T | null {
   }
 }
 
+// After JSON.parse reconstitutes JSONL entries, literal control chars (e.g. \r,
+// \x07 from bash output) reappear in string fields.  When those strings are later
+// JSON-serialised in the HTTP request body they cause 400 "Unterminated string /
+// Expecting ',' delimiter" errors from the inference backend.
+const CTRL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+function sanitize(s: string | undefined): string {
+  return s ? s.replace(CTRL_CHAR_RE, "") : "";
+}
+
+function sanitizeTranscriptEntry(entry: TranscriptEntry): TranscriptEntry {
+  if (entry.kind === "tool_call") {
+    return {
+      ...entry,
+      argsText: sanitize(entry.argsText),
+      resultText: sanitize(entry.resultText),
+    };
+  }
+  return { ...entry, text: sanitize(entry.text) };
+}
+
 async function ensurePaths(paths: ReflectionTranscriptPaths): Promise<void> {
   await mkdir(paths.rootDir, { recursive: true });
   await writeFile(paths.transcriptPath, "", { encoding: "utf-8", flag: "a" });
@@ -539,7 +559,8 @@ export async function buildAutoReflectionPayload(
 
   const entries = snapshotLines
     .map((line) => parseJsonLine<TranscriptEntry>(line))
-    .filter((entry): entry is TranscriptEntry => entry !== null);
+    .filter((entry): entry is TranscriptEntry => entry !== null)
+    .map(sanitizeTranscriptEntry);
   const transcript = formatTaggedTranscript(entries);
   if (!transcript) {
     return null;
